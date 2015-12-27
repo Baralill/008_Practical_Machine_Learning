@@ -1,0 +1,188 @@
+---
+title: "Practical Machine Learning Assignment"
+date: "27th December 2015"
+output: html_document
+---
+Data
+---
+```{r, echo=FALSE, include=FALSE}
+library(caret)
+library(Hmisc)
+library(corrplot)
+library(rpart)
+library(rattle)
+library(rpart.plot)
+library(RANN)
+
+setwd('C:\\Users\\Barb\\Coursera\\008_Machine_Learning\\Assignment1')
+```
+
+Reading in the data and partitioning the training dataset into a model training (75%) and a model test dataset (25%), this leaves the 'test' csv file for the best performing model. 
+
+```{r}
+set.seed(12345)
+#read in training dataset
+train <- read.csv('pml-training.csv')
+# create training set indexes with 75% of data
+inTrain <- createDataPartition(y=train$classe,p=0.75, list=FALSE)
+# subset data to training
+training <- train[inTrain,]
+# subset data (the rest) to test
+testing <- train[-inTrain,]
+# dimension of original and training dataset
+rbind("original dataset" = dim(train),"training set" = dim(training))
+```
+
+###Exploratory Data Analysis
+
+Table 1 in the Appendix shows the summary table for the training dataset. The following features are noticeable:
+
+1.  there are more than 14,000 observations which have NA's in the vast majority of measurements.
+2.  There are measurements which appear to be highly correlated:
+    (a) Covariates beginning with var_ and those beginning with stddev_. These are variance and standard deviation measurements.
+    (b) Covariates ending with _x, _y, _z. These are measurements in 3 dimensions.
+    
+The following plots show the correlations between these identified covariates:
+    
+```{r}
+#keep predictors
+var_covar <- grep("^[Vv][a][r][_]",names(training), value=TRUE)
+std_covar <- grep("^[Ss][t][d]",names(training), value=TRUE)
+avg_covar <- grep("^[Aa][v][g]",names(training), value=TRUE)
+x_covar <- grep("x$",names(training), value=TRUE)
+y_covar <- grep("y$",names(training), value=TRUE)
+z_covar <- grep("z$",names(training), value=TRUE)
+
+#plot the correlation matrix for these subsets
+M <- cor(training[,c(std_covar)],use="pairwise.complete.obs")
+corrplot.mixed(M)
+
+M_Avg <- cor(training[,c(avg_covar)],use="pairwise.complete.obs")
+corrplot.mixed(M_Avg)
+
+M_XY <- cor(training[,c(x_covar,y_covar)],use="pairwise.complete.obs")
+corrplot.mixed(M_XY)
+
+M_XZ <- cor(training[,c(x_covar,z_covar)],use="pairwise.complete.obs")
+corrplot.mixed(M_XZ)
+
+```
+
+Some of the covariates are highly correlated (>80%) so preprocessing of the data would be advisable.
+
+Identifying Covariates with near zero variance
+---
+Table 2 in the appendix shows the full table of variables with the associated metrics for the near zero variance test.
+
+```{r, echo=FALSE}
+# print nearZeroVar table
+nz<-nearZeroVar(training,saveMetrics=TRUE)
+training <- training[,!nz$nzv]
+testing <- testing[,!nz$nzv]
+```
+
+This shows that all covariates have more than 1 value associated with it but that there are a number of covariates which are close to zero variance. For prediction purposes these will be removed.
+
+```{r, echo=FALSE}
+# dimension of removing near zero covariates
+rbind("training dataset removing near zero" = dim(training))
+```
+
+There are still a large number of covariates with greater than 14,000 observations with NA values, this represents greater than 95% of observations are unknown for these covariates. These covariates could be imputed from non-missing variables.
+
+###Model Building
+
+The outcome is 'classe' which takes the values A, B, C, D or E. For this purpose only classification trees will be considered.
+
+###Method
+
+1. Build classification tree on "as is" training - preprocess for Imputed
+2. Build classification tree on training dataset - preprocess for Principal Components Analysis
+
+For each model assess by using the misclassification table on the partitioned test set.
+
+```{r, echo=FALSE, cache=TRUE}
+set.seed(12345)
+
+#create modelling dataset - last column is the outcome, cols 1:5 are identifier variables
+model_traindata <- training[,c(6:ncol(training))] 
+model_testdata <- testing[,c(6:ncol(testing))] 
+
+preProcValues <- preProcess(model_traindata, method="knnImpute")
+Impute_train <- predict(preProcValues,model_traindata[,-ncol(model_traindata)])
+classe <- training[,c(ncol(training))]
+model_traindata<- cbind(Impute_train, classe)
+
+fit1 <- train(classe ~ ., method = "rf", data=model_traindata)
+fit1$finalModel
+
+model_traindata$pred <- predict(fit1,model_traindata)
+
+Impute_test <- predict(preProcValues,model_testdata[,-ncol(model_testdata)])
+classe <- testing[,c(ncol(testing))]
+model_testdata<- cbind(Impute_test, classe)
+
+model_testdata$pred <- predict(fit1,model_testdata)
+
+table(model_testdata$classe, model_testdata$pred)
+
+varImp(fit1)
+
+```
+
+The table above shows the variable importance from the Random Forest classification fit.
+
+The error rate for the model test dataset is 24 / 4904 which is 0.5%. Since it is taking over an hour on my computer to run the Random forest algorithm and the testdata error rate is less than 0.5% I will not be testing the PCA model as this also has interpretation issues.
+
+The partitioned training dataset and partitioned test dataset have similar error rates of 0.4% and 0.5% respectively.
+
+###Test Dataset
+
+```{r}
+set.seed(12345)
+#read in test dataset
+test <- read.csv('pml-testing.csv')
+
+#remove near zero factors
+testnz <- test[,!nz$nzv]
+
+#Impute missing values
+model_test <- testnz[,c(6:ncol(testnz))] 
+names(model_test)
+names(model_traindata)
+Impute_test <- predict(preProcValues, model_test[,-ncol(model_test)] )
+
+model_test$pred <- predict(fit1,Impute_test)
+
+Finaltest <- model_test[,c("pred")]
+
+```
+
+According to the model the 20 test observations have been allocated to:
+
+A : 7
+B : 8
+C : 1
+D : 1
+E : 3
+
+
+###Appendix
+
+Table 1: Summary table of training dataset
+```{r, echo=FALSE}
+summary(training)
+```
+
+Table 2: Variables with Near Zero Variance
+```{r, echo=FALSE}
+nz
+```
+
+
+
+
+
+
+
+
